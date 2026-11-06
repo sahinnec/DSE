@@ -23,6 +23,10 @@ MAX_COMPANIES = int(os.environ.get("MAX_COMPANIES", "400"))
 DHAKA = dt.timezone(dt.timedelta(hours=6))
 
 
+import re
+FUND_RE = re.compile(r"(MF\d*|BOND|SF|GF|PF\d*|\d+STMF|ETF)$|^(ICB|PRIME1|POPULAR1|EBL1|EBLNRB|SEML|GRAMEENS|GREENDEL|NCCBL|LRGLOB|ABBLP|FBFIF|VAML|AIBL1|DBH1|MBL1|EXIM1|IFIC1|IFILISL|PHPMF|TRUSTB1|CAPMI|CAPMBD|CAPITEC|RELIANCE1|1JANATA|ABB1ST|GLDNJ|ICBAGRANI|ICBAMCL|ICBEP|ICBSONALI|ICB3RD)")
+
+
 def now_dhaka():
     return dt.datetime.now(DHAKA)
 
@@ -314,20 +318,30 @@ def main(bd=None):
     last_session = hist["date"].max().date().isoformat()
     meta["asOf"] = last_session
 
-    # 3. P/E table (cross-check only)
+    try:
+        px.head(15).to_csv(os.path.join(DEBUG_DIR, "prices_sample.csv"), index=False)
+        hist.tail(15).to_csv(os.path.join(DEBUG_DIR, "history_sample.csv"), index=False)
+    except Exception as e:
+        meta["warnings"].append("debug dump failed: %s" % e)
+
+    # 3. P/E table (cross-check + possible EPS source)
+    pe = None
     try:
         pe = bd.get_latest_pe()
         meta["peRows"] = int(len(pe))
+        pe.head(25).to_csv(os.path.join(DEBUG_DIR, "pe_sample.csv"), index=False)
     except Exception as e:
         meta["warnings"].append("P/E table failed: %s" % e)
 
     rows, fund_ok = [], 0
+    company_fail = 0
+    company_off = False
     groups = {k: v for k, v in hist.groupby(hsym) if str(k).upper() in set(codes)}
     for i, code in enumerate(codes):
         g = groups.get(code)
         if g is None:
             g = groups.get(code.lower())
-        row = {"code": code, "name": "", "type": "Equity", "origin": "auto",
+        row = {"code": code, "name": "", "type": "Mutual Fund" if FUND_RE.search(code) else "Equity", "origin": "auto",
                "sourceUrl": "https://www.dse.com.bd/company/" + code}
         price = float(cand.loc[cand["code"].str.upper() == code, "price"].iloc[0])
         row["price"] = price
@@ -343,7 +357,24 @@ def main(bd=None):
             row["priceDate"] = None
         # fundamentals (best effort)
         try:
-            det = bd.get_company_details(code)
+            if company_off:
+                raise RuntimeError("company pages skipped after repeated failures")
+            try:
+                det = bd.get_company_details(code)
+            except Exception as e1:
+                company_fail += 1
+                if company_fail >= 5 and fund_ok == 0:
+                    company_off = True
+                    meta["warnings"].append("company pages blocked (403?); skipped the rest")
+                try:
+                    info = bd.get_company_info(code)      # legacy site, may be available
+                    if i < 3:
+                        with open(os.path.join(DEBUG_DIR, f"legacy_{code}.json"), "w", encoding="utf-8") as f:
+                            json.dump([t.to_dict("records") if isinstance(t, pd.DataFrame) else str(t) for t in (info or [])][:40],
+                                      f, ensure_ascii=False, default=str, indent=1)
+                except Exception as e2:
+                    pass
+                raise e1
             if i < 3:
                 with open(os.path.join(DEBUG_DIR, f"company_{code}.json"), "w", encoding="utf-8") as f:
                     json.dump({k: (v.to_dict("records") if isinstance(v, pd.DataFrame) else v) for k, v in det.items()},
@@ -359,7 +390,7 @@ def main(bd=None):
             if fund.get("nav") is not None and fund.get("ttmEPS") is not None:
                 fund_ok += 1
         except Exception as e:
-            row["_fundError"] = str(e)[:120]
+            row["_fundError"] = str(e)[:100]
         row["reviewDate"] = None          # human reviews set this in the browser
         rows.append(row)
         time.sleep(0.25)
