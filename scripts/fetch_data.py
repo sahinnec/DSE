@@ -333,6 +333,11 @@ def main(bd=None):
     except Exception as e:
         meta["warnings"].append("P/E table failed: %s" % e)
 
+    pe_map = {}
+    if pe is not None:
+        for _, r_ in pe.iterrows():
+            vals = list(r_.values)
+            pe_map[str(vals[0]).upper()] = [num(v) for v in vals[3:]]
     rows, fund_ok = [], 0
     company_fail = 0
     company_off = False
@@ -391,6 +396,8 @@ def main(bd=None):
                 fund_ok += 1
         except Exception as e:
             row["_fundError"] = str(e)[:100]
+        if code in pe_map:
+            row["peRef"] = pe_map[code]      # raw DSE P/E columns, meaning unverified; reference only
         row["reviewDate"] = None          # human reviews set this in the browser
         rows.append(row)
         time.sleep(0.25)
