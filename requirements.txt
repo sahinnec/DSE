@@ -1,0 +1,4 @@
+bdshare==1.2.8
+pandas
+numpy
+lxml
